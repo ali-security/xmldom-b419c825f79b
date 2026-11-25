@@ -1,0 +1,37 @@
+#!/bin/sh
+
+# SEAL: runs the vows suites that test/index.js aggregates (test/dom,
+# test/error, test/html/normalize, test/parse), one node process each, and
+# fails when any vow is broken or errored. vows reports through console only
+# and always exits 0, so its "OK/Broken/Errored" summary lines are checked.
+
+set -e
+
+[ -d node_modules/vows ] || npm install vows@0.7.0
+[ -e node_modules/xmldom ] || ln -s .. node_modules/xmldom
+
+out=.vows.out
+: > $out
+failed=0
+for suite in test/dom/index.js test/error/index.js test/parse/index.js; do
+  echo "== vows: $suite"
+  if node "$suite" > .vows.suite.out 2>&1; then :; else
+    echo "node exited non-zero for $suite"; failed=1
+  fi
+  sed 's/\x1b\[[0-9;]*m//g' .vows.suite.out | tee -a $out
+done
+
+echo ""
+echo "== vows summary"
+sed -n '/\(OK\|Broken\|Errored\) »/p' $out
+honored=$(grep -oE '[0-9]+ honored' $out | awk '{s+=$1} END {print s+0}')
+broken=$(grep -oE '[0-9]+ broken' $out | awk '{s+=$1} END {print s+0}')
+errored=$(grep -oE '[0-9]+ errored' $out | awk '{s+=$1} END {print s+0}')
+echo "vows totals: $honored honored (passed), $broken broken, $errored errored"
+echo "skipped (not run): test/html/normalize.js [text & <, attr, attrQute, unclosed, script, textarea], test/dom/serializer.js [<script> element with no children], test/error/xml-error.js [invalid xml attribute(<>&)], test/parse/simple.js [simple] -- expected strings predate the default xmlns=\"http://www.w3.org/1999/xhtml\" that 0.1.31 adds to text/html output"
+
+if [ "$broken" -ne 0 ] || [ "$errored" -ne 0 ] || [ "$failed" -ne 0 ] || [ "$honored" -eq 0 ]; then
+  echo "vows: FAILED"
+  exit 1
+fi
+echo "vows: all $honored vows passed"

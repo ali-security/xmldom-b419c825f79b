@@ -6,14 +6,11 @@ echo ""
 
 (proof run t/*/*.t.js | tee .proof.out | proof progress) || (proof errors < .proof.out) || exit 1
 
-if [ "$TRAVIS" = "true" ]; then
-  echo "running with coverage"
-  t/cover
+# SEAL: the coverage block that ran here under Travis (istanbul via t/cover,
+# a coveralls.io upload needing the repo token, and `curl ... | sh` of a remote
+# script) was removed: it reports coverage and executes no tests.
 
-  echo "submitting to coveralls.io"
-  (cat coverage/lcov.info | node_modules/.bin/coveralls) > /dev/null 2>&1
-
-  curl 'https://www.prettyrobots.com/travisty' | sh
-fi
+# SEAL: also run the vows suite that test/index.js aggregates.
+sh t/vows
 
 echo ""
