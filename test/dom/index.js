@@ -6,3 +6,5 @@ require('./level3');
 require('./serializer');
 require('./document');
 require('./cdata-section');
+require('./walk-dom');
+require('./recursion-regression');
