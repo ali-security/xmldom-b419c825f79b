@@ -540,6 +540,176 @@ wows.describe('XMLSerializer DocumentType serialization with requireWellFormed')
 	},
 }).run();
 
+// see https://github.com/xmldom/xmldom/security/advisories/GHSA-x6wf-f3px-wcqx
+wows.describe('Document.prototype.createProcessingInstruction').addBatch({
+	'accepts any target or data without throwing': function () {
+		var doc = new DOMParser().parseFromString('<xml></xml>', 'text/xml');
+		assert.doesNotThrow(function () { doc.createProcessingInstruction('ns:bad', 'data'); });
+		assert.doesNotThrow(function () { doc.createProcessingInstruction('xml', '?>'); });
+		assert.doesNotThrow(function () { doc.createProcessingInstruction('foo', 'inject?>evil'); });
+	},
+}).run();
+
+wows.describe('XMLSerializer ProcessingInstruction serialization with requireWellFormed').addBatch({
+	'default: PI with ":" in target emits verbatim - no throw': function () {
+		var doc = createRootDocument();
+		doc.documentElement.appendChild(doc.createProcessingInstruction('ns:target', 'data'));
+		assert.equal(new XMLSerializer().serializeToString(doc), '<root><?ns:target data?></root>');
+	},
+	'default: PI with target "xml" emits verbatim - no throw': function () {
+		var doc = createRootDocument();
+		doc.documentElement.appendChild(doc.createProcessingInstruction('xml', 'version="1.0"'));
+		assert.equal(new XMLSerializer().serializeToString(doc), '<root><?xml version="1.0"?></root>');
+	},
+	'default: PI with invalid XML Char in data emits verbatim - no throw': function () {
+		var doc = createRootDocument();
+		doc.documentElement.appendChild(doc.createProcessingInstruction('foo', 'data\u0000here'));
+		assert.equal(new XMLSerializer().serializeToString(doc), '<root><?foo data\u0000here?></root>');
+	},
+	'default: PI with "?>" in data emits verbatim - no throw': function () {
+		var doc = createRootDocument();
+		doc.documentElement.appendChild(doc.createProcessingInstruction('foo', 'inject?>evil'));
+		assert.equal(new XMLSerializer().serializeToString(doc), '<root><?foo inject?>evil?></root>');
+	},
+	'requireWellFormed: false or null options: PI with "?>" emits verbatim': function () {
+		var doc = createRootDocument();
+		doc.documentElement.appendChild(doc.createProcessingInstruction('foo', 'inject?>evil'));
+		assert.equal(new XMLSerializer().serializeToString(doc, false, null, { requireWellFormed: false }), '<root><?foo inject?>evil?></root>');
+		assert.equal(new XMLSerializer().serializeToString(doc, false, null, null), '<root><?foo inject?>evil?></root>');
+	},
+	'requireWellFormed: true on PI with ":" in target throws InvalidStateError': function () {
+		var doc = createRootDocument();
+		doc.documentElement.appendChild(doc.createProcessingInstruction('ns:target', 'data'));
+		assertDOMException(INVALID_STATE_ERR, function () {
+			serializeWellFormed(doc);
+		});
+	},
+	'requireWellFormed: true on PI with target "xml" throws InvalidStateError': function () {
+		var doc = createRootDocument();
+		doc.documentElement.appendChild(doc.createProcessingInstruction('xml', 'version="1.0"'));
+		assertDOMException(INVALID_STATE_ERR, function () {
+			serializeWellFormed(doc);
+		});
+	},
+	'requireWellFormed: true on PI with target "XML" (uppercase) throws InvalidStateError': function () {
+		var doc = createRootDocument();
+		doc.documentElement.appendChild(doc.createProcessingInstruction('XML', 'data'));
+		assertDOMException(INVALID_STATE_ERR, function () {
+			serializeWellFormed(doc);
+		});
+	},
+	'requireWellFormed: true on PI with target "Xml" (mixed case) throws InvalidStateError': function () {
+		var doc = createRootDocument();
+		doc.documentElement.appendChild(doc.createProcessingInstruction('Xml', 'data'));
+		assertDOMException(INVALID_STATE_ERR, function () {
+			serializeWellFormed(doc);
+		});
+	},
+	'requireWellFormed: true on PI with invalid XML Char (\\x00) in data throws InvalidStateError': function () {
+		var doc = createRootDocument();
+		doc.documentElement.appendChild(doc.createProcessingInstruction('foo', 'data\u0000here'));
+		assertDOMException(INVALID_STATE_ERR, function () {
+			serializeWellFormed(doc);
+		});
+	},
+	'requireWellFormed: true on PI with a lone surrogate in data throws InvalidStateError': function () {
+		var doc = createRootDocument();
+		doc.documentElement.appendChild(doc.createProcessingInstruction('foo', 'data\uD83Dhere'));
+		assertDOMException(INVALID_STATE_ERR, function () {
+			serializeWellFormed(doc);
+		});
+	},
+	'requireWellFormed: true on PI with "?>" in data throws InvalidStateError': function () {
+		var doc = createRootDocument();
+		doc.documentElement.appendChild(doc.createProcessingInstruction('foo', 'inject?>evil'));
+		assertDOMException(INVALID_STATE_ERR, function () {
+			serializeWellFormed(doc);
+		});
+	},
+	'requireWellFormed: true on PI with clean target and data does not throw': function () {
+		var doc = createRootDocument();
+		doc.documentElement.appendChild(doc.createProcessingInstruction('xml-stylesheet', 'href="style.css"'));
+		doc.documentElement.appendChild(doc.createProcessingInstruction('foo', 'a?b>c \t\r\n\uD83D\uDE00'));
+		assert.equal(serializeWellFormed(doc), '<root><?xml-stylesheet href="style.css"?><?foo a?b>c \t\r\n\uD83D\uDE00?></root>');
+	},
+}).addBatch({
+	'advisory payload is emitted verbatim by default and injects a live element': function () {
+		var doc = new DOMImplementation().createDocument(null, 'r', null);
+		doc.documentElement.appendChild(doc.createProcessingInstruction('a', '?><z/><?q '));
+		var xml = new XMLSerializer().serializeToString(doc);
+		assert.equal(xml, '<r><?a ?><z/><?q ?></r>');
+		var reparsed = new DOMParser().parseFromString(xml, 'text/xml');
+		assert.equal(reparsed.getElementsByTagName('z').length, 1);
+	},
+	'requireWellFormed: true on the advisory payload throws InvalidStateError': function () {
+		var doc = new DOMImplementation().createDocument(null, 'r', null);
+		doc.documentElement.appendChild(doc.createProcessingInstruction('a', '?><z/><?q '));
+		assertDOMException(INVALID_STATE_ERR, function () {
+			serializeWellFormed(doc);
+		});
+	},
+	'mutation vector: set PI data to "?>" then requireWellFormed: true throws InvalidStateError': function () {
+		var doc = createRootDocument();
+		var pi = doc.createProcessingInstruction('foo', 'clean');
+		doc.documentElement.appendChild(pi);
+		assert.equal(serializeWellFormed(doc), '<root><?foo clean?></root>');
+		pi.data = 'inject?>evil';
+		assertDOMException(INVALID_STATE_ERR, function () {
+			serializeWellFormed(doc);
+		});
+	},
+	'mutation vector: .textContent assignment then requireWellFormed: true throws InvalidStateError': function () {
+		var doc = createRootDocument();
+		var pi = doc.createProcessingInstruction('foo', 'clean');
+		doc.documentElement.appendChild(pi);
+		pi.textContent = '?><injected/><?q ';
+		assertDOMException(INVALID_STATE_ERR, function () {
+			serializeWellFormed(doc);
+		});
+	},
+	'mutation vector: set PI target to "xml" then requireWellFormed: true throws InvalidStateError': function () {
+		var doc = createRootDocument();
+		var pi = doc.createProcessingInstruction('foo', 'clean');
+		doc.documentElement.appendChild(pi);
+		pi.target = 'xml';
+		assertDOMException(INVALID_STATE_ERR, function () {
+			serializeWellFormed(doc);
+		});
+	},
+	'node.toString and NodeList.toString with requireWellFormed: true throw InvalidStateError': function () {
+		var doc = createRootDocument();
+		var pi = doc.createProcessingInstruction('foo', '?><injected/><?q ');
+		doc.documentElement.appendChild(pi);
+		assertDOMException(INVALID_STATE_ERR, function () {
+			doc.toString(false, null, REQUIRE_WELL_FORMED);
+		});
+		assertDOMException(INVALID_STATE_ERR, function () {
+			pi.toString(false, null, REQUIRE_WELL_FORMED);
+		});
+		assertDOMException(INVALID_STATE_ERR, function () {
+			doc.documentElement.childNodes.toString(false, null, REQUIRE_WELL_FORMED);
+		});
+	},
+	'requireWellFormed: true throws for a PI in a DocumentFragment or a document-level PI': function () {
+		var doc = createRootDocument();
+		var fragment = doc.createDocumentFragment();
+		fragment.appendChild(doc.createProcessingInstruction('foo', '?><injected/><?q '));
+		assertDOMException(INVALID_STATE_ERR, function () {
+			serializeWellFormed(fragment);
+		});
+		var doc2 = createRootDocument();
+		doc2.insertBefore(doc2.createProcessingInstruction('foo', '?><injected/><?q '), doc2.documentElement);
+		assertDOMException(INVALID_STATE_ERR, function () {
+			serializeWellFormed(doc2);
+		});
+	},
+	'requireWellFormed: true serializes a parsed PI unchanged': function () {
+		var source = '<root><?xml-stylesheet href="style.css" type="text/css"?></root>';
+		var doc = new DOMParser().parseFromString(source, 'text/xml');
+		assert.equal(serializeWellFormed(doc), source);
+	},
+}).run();
+
 // SEAL: excluded from the run -- the expectation predates the default
 // xmlns="http://www.w3.org/1999/xhtml" that text/html parsing adds in 0.1.31
 // (actual: <script xmlns="http://www.w3.org/1999/xhtml"></script>).

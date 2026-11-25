@@ -1123,6 +1123,26 @@ Document.prototype = {
 		node.appendData(data)
 		return node;
 	},
+	/**
+	 * Returns a ProcessingInstruction node whose target is target and data is data.
+	 *
+	 * __This behavior is slightly different from the in the specs__:
+	 * - it does not do any input validation on the arguments and doesn't throw
+	 * "InvalidCharacterError".
+	 *
+	 * Note: When the resulting document is serialized with `requireWellFormed: true`, the
+	 * serializer throws a DOMException with code `INVALID_STATE_ERR` if `.target` contains `:`
+	 * or is an ASCII case-insensitive match for `"xml"`, or if `.data` contains `?>` or
+	 * characters outside the XML Char production (W3C DOM Parsing §3.2.1.7). Without that
+	 * option the data is emitted verbatim.
+	 *
+	 * @param {string} target
+	 * @param {string} data
+	 * @returns {ProcessingInstruction}
+	 * @see https://developer.mozilla.org/docs/Web/API/Document/createProcessingInstruction
+	 * @see https://dom.spec.whatwg.org/#dom-document-createprocessinginstruction
+	 * @see https://www.w3.org/TR/DOM-Parsing/#dfn-concept-serialize-xml §3.2.1.7
+	 */
 	createProcessingInstruction :	function(target,data){
 		var node = new ProcessingInstruction();
 		node.ownerDocument = this;
@@ -1431,13 +1451,16 @@ function XMLSerializer(){}
  * - a DocumentType's `publicId` is non-empty and does not match the XML `PubidLiteral`
  *   production,
  * - a DocumentType's `systemId` is non-empty and does not match the XML `SystemLiteral`
- *   production, or
- * - a DocumentType's `internalSubset` contains `"]>"` (also with white space before the `">"`).
+ *   production,
+ * - a DocumentType's `internalSubset` contains `"]>"` (also with white space before the `">"`), or
+ * - a ProcessingInstruction's target contains `:` or is an ASCII case-insensitive match for
+ *   `"xml"`, or its data contains `"?>"` or characters outside the XML Char production.
  * Note: xmldom does not enforce `readonly` on DocumentType fields — direct property
  * writes succeed and are covered by the serializer-level checks above.
  * @see https://html.spec.whatwg.org/#dom-xmlserializer-serializetostring
  * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-j759-j44w-7fr8
  * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-f6ww-3ggp-fr8h
+ * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-x6wf-f3px-wcqx
  * @see https://github.com/w3c/DOM-Parsing/issues/84
  */
 XMLSerializer.prototype.serializeToString = function(node,isHtml,nodeFilter,options){
@@ -1705,6 +1728,18 @@ function serializeNodeTree(root,buf,isHTML,nodeFilter,visibleNamespaces,requireW
 				}
 				return null;
 			case PROCESSING_INSTRUCTION_NODE:
+				// see https://github.com/xmldom/xmldom/security/advisories/GHSA-x6wf-f3px-wcqx
+				if (requireWellFormed) {
+					if (node.target.indexOf(':') !== -1 || node.target.toLowerCase() === 'xml') {
+						throw new DOMException(INVALID_STATE_ERR, 'The ProcessingInstruction target is not well-formed');
+					}
+					if (InvalidXmlChar.test(node.data)) {
+						throw new DOMException(INVALID_STATE_ERR, 'The ProcessingInstruction data contains characters outside the XML Char production');
+					}
+					if (node.data.indexOf('?>') !== -1) {
+						throw new DOMException(INVALID_STATE_ERR, 'The ProcessingInstruction data contains "?>"');
+					}
+				}
 				buf.push( "<?",node.target," ",node.data,"?>");
 				return null;
 			case ENTITY_REFERENCE_NODE:
