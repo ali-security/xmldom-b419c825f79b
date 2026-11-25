@@ -5,3 +5,4 @@ require('./fragment');
 require('./level3');
 require('./serializer');
 require('./document');
+require('./cdata-section');
