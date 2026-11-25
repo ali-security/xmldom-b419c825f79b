@@ -339,6 +339,24 @@ DOMImplementation.prototype = {
 		}
 		return doc;
 	},
+	/**
+	 * Returns a doctype, with the given `qualifiedName`, `publicId`, and `systemId`.
+	 *
+	 * Note: `qualifiedName`, `publicId` and `systemId` are stored verbatim (including surrounding
+	 * quotes), creation-time validation is not enforced. `internalSubset` can only be introduced
+	 * via a direct property write to `node.internalSubset` after creation.
+	 * When serialized with `requireWellFormed: true` (via the 4th-parameter options object),
+	 * the serializer throws `DOMException` with code `INVALID_STATE_ERR` if the name is not a
+	 * valid XML `Name`, if `publicId` is non-empty and does not match the XML `PubidLiteral`
+	 * production, if `systemId` is non-empty and does not match the XML `SystemLiteral`
+	 * production, or if `internalSubset` contains `"]>"`.
+	 *
+	 * @param {string} qualifiedName
+	 * @param {string} [publicId]
+	 * @param {string} [systemId]
+	 * @returns {DocumentType}
+	 * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-f6ww-3ggp-fr8h
+	 */
 	// Introduced in DOM Level 2:
 	createDocumentType:function(qualifiedName, publicId, systemId){// raises:INVALID_CHARACTER_ERR,NAMESPACE_ERR
 		var node = new DocumentType();
@@ -1336,6 +1354,21 @@ CDATASection.prototype = {
 _extends(CDATASection,CharacterData);
 
 
+/**
+ * Represents a DocumentType node (the `<!DOCTYPE ...>` declaration).
+ *
+ * `name`, `publicId`, `systemId`, and `internalSubset` are plain own-property assignments.
+ * xmldom does not enforce the `readonly` constraint declared by the WHATWG DOM spec —
+ * direct property writes succeed silently. Values are serialized verbatim when
+ * `requireWellFormed` is false (the default). When the serializer is invoked with
+ * `requireWellFormed: true` (via the 4th-parameter options object), it validates each
+ * field — including `name`, which is checked against the XML `Name` production — and throws
+ * `DOMException` with code `INVALID_STATE_ERR` on invalid values.
+ *
+ * @class
+ * @see https://developer.mozilla.org/docs/Web/API/DocumentType MDN
+ * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-f6ww-3ggp-fr8h
+ */
 function DocumentType() {
 };
 DocumentType.prototype.nodeType = DOCUMENT_TYPE_NODE;
@@ -1390,11 +1423,21 @@ function XMLSerializer(){}
  * When `true`, throws for content that would produce ill-formed XML.
  * @returns {string}
  * @throws {DOMException}
- * With code `INVALID_STATE_ERR` when `requireWellFormed` is `true` and the CDATASection
- * data contains `"]]>"`, or a Comment node's data contains `"--"` anywhere, ends with `"-"`,
- * or contains characters outside the XML Char production.
+ * With code `INVALID_STATE_ERR` when `requireWellFormed` is `true` and:
+ * - a CDATASection node's data contains `"]]>"`,
+ * - a Comment node's data contains `"--"` anywhere, ends with `"-"`,
+ *   or contains characters outside the XML Char production,
+ * - a DocumentType's `name` is not a valid XML `Name` (XML 1.0 production [5]),
+ * - a DocumentType's `publicId` is non-empty and does not match the XML `PubidLiteral`
+ *   production,
+ * - a DocumentType's `systemId` is non-empty and does not match the XML `SystemLiteral`
+ *   production, or
+ * - a DocumentType's `internalSubset` contains `"]>"` (also with white space before the `">"`).
+ * Note: xmldom does not enforce `readonly` on DocumentType fields — direct property
+ * writes succeed and are covered by the serializer-level checks above.
  * @see https://html.spec.whatwg.org/#dom-xmlserializer-serializetostring
  * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-j759-j44w-7fr8
+ * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-f6ww-3ggp-fr8h
  * @see https://github.com/w3c/DOM-Parsing/issues/84
  */
 XMLSerializer.prototype.serializeToString = function(node,isHtml,nodeFilter,options){
@@ -1470,6 +1513,23 @@ function addSerializedAttribute(buf, qualifiedName, value) {
  * @see https://www.w3.org/TR/xml/#NT-Char
  */
 var InvalidXmlChar = /[^\t\n\r\u0020-\uFFFD]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/**
+ * Full-string matchers for the `requireWellFormed` checks of DocumentType nodes.
+ * `tagNamePattern` is the same name pattern the SAX parser (sax.js) applies to tag names.
+ * @see https://www.w3.org/TR/xml/#NT-Name
+ * @see https://www.w3.org/TR/xml/#NT-PubidLiteral
+ * @see https://www.w3.org/TR/xml/#NT-SystemLiteral
+ * @see https://w3c.github.io/DOM-Parsing/#xml-serializing-a-documenttype-node
+ * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-f6ww-3ggp-fr8h
+ */
+var nameStartChar = /[A-Z_a-z\xC0-\xD6\xD8-\xF6\u00F8-\u02FF\u0370-\u037D\u037F-\u1FFF\u200C-\u200D\u2070-\u218F\u2C00-\u2FEF\u3001-\uD7FF\uF900-\uFDCF\uFDF0-\uFFFD]/;
+var nameChar = new RegExp("[\\-\\.0-9"+nameStartChar.source.slice(1,-1)+"\\u00B7\\u0300-\\u036F\\u203F-\\u2040]");
+var tagNamePattern = new RegExp('^'+nameStartChar.source+nameChar.source+'*(?:\:'+nameStartChar.source+nameChar.source+'*)?$');
+var PubidLiteral_match = /^(?:"[\x20\x0D\x0Aa-zA-Z0-9\-'()+,.\/:=?;!*#@$_%]*"|'[\x20\x0D\x0Aa-zA-Z0-9\-()+,.\/:=?;!*#@$_%]*')$/;
+var SystemLiteral_match = /^(?:"[^"]*"|'[^']*')$/;
+// `]`, optional white space and `>` closes the internal subset and the doctype declaration
+var InternalSubsetEnd = /\][\x20\x09\x0D\x0A]*>/;
 
 function serializeToString(node,buf,isHTML,nodeFilter,visibleNamespaces,requireWellFormed){
 	if(nodeFilter){
@@ -1612,6 +1672,21 @@ function serializeNodeTree(root,buf,isHTML,nodeFilter,visibleNamespaces,requireW
 			case DOCUMENT_TYPE_NODE:
 				var pubid = node.publicId;
 				var sysid = node.systemId;
+				// see https://github.com/xmldom/xmldom/security/advisories/GHSA-f6ww-3ggp-fr8h
+				if (requireWellFormed) {
+					if (!tagNamePattern.test(node.name)) {
+						throw new DOMException(INVALID_STATE_ERR, 'The doctype name "' + node.name + '" is not a valid XML Name');
+					}
+					if (pubid && !PubidLiteral_match.test(pubid)) {
+						throw new DOMException(INVALID_STATE_ERR, 'DocumentType publicId is not a valid PubidLiteral');
+					}
+					if (sysid && sysid != '.' && !SystemLiteral_match.test(sysid)) {
+						throw new DOMException(INVALID_STATE_ERR, 'DocumentType systemId is not a valid SystemLiteral');
+					}
+					if (node.internalSubset && InternalSubsetEnd.test(node.internalSubset)) {
+						throw new DOMException(INVALID_STATE_ERR, 'DocumentType internalSubset contains "]>"');
+					}
+				}
 				buf.push('<!DOCTYPE ',node.name);
 				if(pubid){
 					buf.push(' PUBLIC ', pubid);
