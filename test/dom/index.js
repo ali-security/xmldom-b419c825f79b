@@ -4,3 +4,4 @@ require('./element');
 require('./fragment');
 require('./level3');
 require('./serializer');
+require('./document');
