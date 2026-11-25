@@ -970,6 +970,19 @@ Document.prototype = {
 		node.appendData(data)
 		return node;
 	},
+	/**
+	 * @param {string} data
+	 * @returns {Comment}
+	 * @see https://dom.spec.whatwg.org/#dom-document-createcomment
+	 * @see https://www.w3.org/TR/xml/#NT-Comment XML 1.0 production [15]
+	 * @see https://www.w3.org/TR/DOM-Parsing/#dfn-concept-serialize-xml §3.2.1.3
+	 *
+	 *      Note: no validation is performed at creation time. When the resulting document is
+	 *      serialized with `requireWellFormed: true`, the serializer throws a DOMException with
+	 *      code `INVALID_STATE_ERR` if the comment data contains `--` anywhere, ends with `-`,
+	 *      or contains characters outside the XML Char production (W3C DOM Parsing §3.2.1.3).
+	 *      Without that option the data is emitted verbatim.
+	 */
 	createComment :	function(data){
 		var node = new Comment();
 		node.ownerDocument = this;
@@ -1283,8 +1296,10 @@ function XMLSerializer(){}
  * @returns {string}
  * @throws {DOMException}
  * With code `INVALID_STATE_ERR` when `requireWellFormed` is `true` and the CDATASection
- * data contains `"]]>"`.
+ * data contains `"]]>"`, or a Comment node's data contains `"--"` anywhere, ends with `"-"`,
+ * or contains characters outside the XML Char production.
  * @see https://html.spec.whatwg.org/#dom-xmlserializer-serializetostring
+ * @see https://github.com/xmldom/xmldom/security/advisories/GHSA-j759-j44w-7fr8
  * @see https://github.com/w3c/DOM-Parsing/issues/84
  */
 XMLSerializer.prototype.serializeToString = function(node,isHtml,nodeFilter,options){
@@ -1351,6 +1366,15 @@ function needNamespaceDefine(node,isHTML, visibleNamespaces) {
 function addSerializedAttribute(buf, qualifiedName, value) {
 	buf.push(' ', qualifiedName, '="', value.replace(/[<&"]/g,_xmlEncoder), '"')
 }
+
+/**
+ * Matches a character outside the XML Char production
+ * (`#x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]`).
+ * Supplementary characters are only valid as a well-formed UTF-16 surrogate pair,
+ * so a lone high or low surrogate is matched as well.
+ * @see https://www.w3.org/TR/xml/#NT-Char
+ */
+var InvalidXmlChar = /[^\t\n\r\u0020-\uFFFD]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 function serializeToString(node,buf,isHTML,nodeFilter,visibleNamespaces,requireWellFormed){
 	if(nodeFilter){
@@ -1450,6 +1474,15 @@ function serializeToString(node,buf,isHTML,nodeFilter,visibleNamespaces,requireW
 		}
 		return buf.push('<![CDATA[', node.data.replace(/]]>/g, ']]]]><![CDATA[>'), ']]>');
 	case COMMENT_NODE:
+		// see https://github.com/xmldom/xmldom/security/advisories/GHSA-j759-j44w-7fr8
+		if (requireWellFormed) {
+			if (InvalidXmlChar.test(node.data)) {
+				throw new DOMException(INVALID_STATE_ERR, 'The comment node data contains characters outside the XML Char production');
+			}
+			if (node.data.indexOf('--') !== -1 || node.data.charAt(node.data.length - 1) === '-') {
+				throw new DOMException(INVALID_STATE_ERR, 'The comment node data contains "--" or ends with "-"');
+			}
+		}
 		return buf.push( "<!--",node.data,"-->");
 	case DOCUMENT_TYPE_NODE:
 		var pubid = node.publicId;
