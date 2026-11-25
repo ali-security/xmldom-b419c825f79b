@@ -78,4 +78,87 @@ wows.describe('XML Node Parse').addBatch({
 		assert.equal(doc.firstChild.nodeType, 10);
 		assert.equal(doc.toString(), source);
 	}
-}).run();
+}).addBatch((function () {
+	/**
+	 * The XML `ETag` production is `'</' Name S? '>'`: only optional whitespace may follow the `Name`.
+	 * A valid `Name` followed by whitespace and non-whitespace residue (e.g. `</a\njunk>` or
+	 * `</a junk>`) is not well-formed, but historically it was silently accepted. It is now reported
+	 * as a recoverable `error` (in both XML and HTML) while parsing recovers to byte-identical DOM.
+	 */
+	var TRAILING_CONTENT = /followed by whitespace and trailing content/;
+	function collectingParser(errors) {
+		function collect(level) {
+			return function (msg) {
+				(errors[level] = errors[level] || []).push(msg);
+			};
+		}
+		return new DOMParser({
+			locator: {},
+			errorHandler: {warning: collect('warning'), error: collect('error'), fatalError: collect('fatalError')}
+		});
+	}
+	function reportsTrailingContent(errors) {
+		for (var i = 0; errors.error && i < errors.error.length; i++) {
+			if (TRAILING_CONTENT.test(errors.error[i])) {
+				return true;
+			}
+		}
+		return false;
+	}
+	var batch = {};
+	[
+		['a space', ' '],
+		['a tab', '\t'],
+		['a line feed', '\n'],
+		['a carriage return', '\r']
+	].forEach(function (testCase) {
+		batch['end tag with ' + testCase[0] + ' residue: reports a recoverable error and recovers to byte-identical DOM'] = function () {
+			var source = '<a></a' + testCase[1] + 'junk>';
+
+			var cleanXml = new DOMParser().parseFromString('<a></a>', 'text/xml').toString();
+			var xmlErrors = {};
+			assert.equal(collectingParser(xmlErrors).parseFromString(source, 'text/xml').toString(), cleanXml);
+			assert.ok(reportsTrailingContent(xmlErrors), 'reported errors: ' + xmlErrors.error);
+			assert.equal(xmlErrors.fatalError, undefined);
+
+			var cleanHtml = new DOMParser().parseFromString('<a></a>', 'text/html').toString();
+			var htmlErrors = {};
+			assert.equal(collectingParser(htmlErrors).parseFromString(source, 'text/html').toString(), cleanHtml);
+			assert.ok(reportsTrailingContent(htmlErrors), 'reported errors: ' + htmlErrors.error);
+		};
+	});
+	batch['end tag with residue after several whitespace characters is reported'] = function () {
+		var errors = {};
+		collectingParser(errors).parseFromString('<root><a>x</a \r\n\tjunk="1" \n><b/></root>', 'text/xml');
+		assert.ok(reportsTrailingContent(errors), 'reported errors: ' + errors.error);
+	};
+	batch['end tag with residue: an errorHandler.error that throws rejects the document'] = function () {
+		var parser = new DOMParser({
+			errorHandler: {
+				error: function (msg) {
+					throw new Error(msg);
+				}
+			}
+		});
+		assert['throws'](function () {
+			parser.parseFromString('<a></a\njunk>', 'text/xml');
+		}, TRAILING_CONTENT);
+		assert['throws'](function () {
+			parser.parseFromString('<root><a>safe</a\nevil><b/></root>', 'text/xml');
+		}, TRAILING_CONTENT);
+	};
+	batch['does not report a clean end tag with only trailing whitespace'] = function () {
+		var errors = {};
+		assert.equal(collectingParser(errors).parseFromString('<a></a\r\n>', 'text/xml').toString(), '<a/>');
+		assert.equal(errors.error, undefined);
+		collectingParser(errors).parseFromString('<a><b></b \t\r\n></a >', 'text/xml');
+		assert.equal(errors.error, undefined);
+	};
+	batch['does not report the new error for an end tag that is maybe not complete'] = function () {
+		var errors = {};
+		collectingParser(errors).parseFromString('<xml><inner></inner </xml>', 'text/xml');
+		assert.ok(/maybe not complete/.test(errors.error), 'reported errors: ' + errors.error);
+		assert.ok(!reportsTrailingContent(errors), 'reported errors: ' + errors.error);
+	};
+	return batch;
+})()).run();
